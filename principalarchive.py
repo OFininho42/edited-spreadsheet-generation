@@ -72,44 +72,91 @@ class ExcelHandler:
         print(f"🧹 Aba '{sheet_name}' desmesclada e sem quebra de texto.")
         return True
 
-    def delete_empty_columns(self, sheet_name: str) -> bool:
-        """Identifica e remove apenas as colunas totalmente vazias."""
+    def trim_rows_by_anchors(
+        self,
+        sheet_name: str,
+        header_text: str = "CÓDIGO",
+        footer_text: str = "RESUMO DO BALANCETE",
+        col_idx: int = 1,
+    ) -> bool:
+        """Localiza dinamicamente o cabeçalho e o rodapé na coluna especificada (padrão: Coluna A)
+
+        e remove tudo o que estiver fora desse intervalo.
+        """
         if not self.is_valid or sheet_name not in self.wb.sheetnames:
             return False
 
         ws = self.wb[sheet_name]
 
-        # Itera de trás para frente (da última coluna até a coluna 1)
-        for col_idx in range(ws.max_column, 0, -1):
-            column_cells = [
-                ws.cell(row=r, column=col_idx).value
-                for r in range(1, ws.max_row + 1)
-            ]
+        header_row = None
+        footer_row = None
 
-            # Verifica se todas as células da coluna são None ou contêm apenas espaços
-            is_empty = all(
-                val is None or str(val).strip() == "" for val in column_cells
+        # 1. Varre a Coluna A identificando as linhas das âncoras
+        for row in range(1, ws.max_row + 1):
+            val = ws.cell(row=row, column=col_idx).value
+            if val is not None:
+                cell_str = str(val).strip().upper()
+
+                if header_text.upper() in cell_str and header_row is None:
+                    header_row = row
+
+                if footer_text.upper() in cell_str and footer_row is None:
+                    footer_row = row
+
+        # 2. Apaga o rodapé primeiro (para não alterar o índice da linha do cabeçalho)
+        if footer_row:
+            rows_to_delete_footer = (ws.max_row - footer_row) + 1
+            ws.delete_rows(footer_row, rows_to_delete_footer)
+            print(
+                f"✂️ Rodapé encontrado ('{footer_text}' na linha {footer_row}). Removidas {rows_to_delete_footer} linhas do fim."
             )
+        else:
+            print(
+                f"ℹ️ Texto de rodapé '{footer_text}' não encontrado na Coluna A."
+            )
+
+        # 3. Apaga o topo (tudo antes da linha do cabeçalho)
+        if header_row and header_row > 1:
+            rows_to_delete_header = header_row - 1
+            ws.delete_rows(1, rows_to_delete_header)
+            print(
+                f"✂️ Cabeçalho encontrado ('{header_text}' na linha {header_row}). Removidas as primeiras {rows_to_delete_header} linhas."
+            )
+        elif header_row == 1:
+            print(f"ℹ️ O cabeçalho '{header_text}' já está na linha 1.")
+        else:
+            print(
+                f"⚠️ Texto de cabeçalho '{header_text}' não foi encontrado na Coluna A."
+            )
+
+        return True
+
+    def delete_empty_columns(self, sheet_name: str) -> bool:
+        """Identifica e remove colunas que não possuem nenhum dado útil."""
+        if not self.is_valid or sheet_name not in self.wb.sheetnames:
+            return False
+
+        ws = self.wb[sheet_name]
+
+        max_row = ws.max_row
+        max_col = ws.max_column
+
+        # Itera de trás para frente (da última coluna até a coluna 1)
+        for col_idx in range(max_col, 0, -1):
+            is_empty = True
+
+            for row in range(1, max_row + 1):
+                val = ws.cell(row=row, column=col_idx).value
+
+                # Se encontrar qualquer célula com conteúdo real
+                if val is not None and str(val).strip() != "":
+                    is_empty = False
+                    break
 
             if is_empty:
                 ws.delete_cols(col_idx)
 
         print(f"🗑️ Colunas totalmente vazias removidas na aba '{sheet_name}'.")
-        return True
-
-    def delete_top_rows(self, sheet_name: str, num_rows: int = 6) -> bool:
-        """Remove as N primeiras linhas da planilha (padrão: 6 linhas)."""
-        if not self.is_valid or sheet_name not in self.wb.sheetnames:
-            return False
-
-        ws = self.wb[sheet_name]
-
-        # Apaga a partir da linha 1 até a quantidade informada (num_rows)
-        ws.delete_rows(1, num_rows)
-
-        print(
-            f"✂️ Primeiras {num_rows} linhas excluídas na aba '{sheet_name}'. A linha do cabeçalho agora é a Linha 1."
-        )
         return True
 
     def save(self) -> None:
@@ -119,11 +166,27 @@ class ExcelHandler:
             print(f"💾 Arquivo salvo com sucesso em: '{self.file_path}'")
 
     def process_and_prepare(self, origin: str, destination: str) -> None:
-        """Executa a esteira completa de automação."""
+        """Esteira otimizada com busca por âncoras:
+
+        1. Copia a aba
+        2. Desmescla células
+        3. Recorta o topo e o rodapé dinamicamente ("Código" até "RESUMO DO BALANCETE")
+        4. Exclui colunas 100% vazias
+        5. Salva
+        """
         if self.copy_sheet(origin, destination):
             self.clean_sheet(destination)
+
+            # Recorta a planilha delimitando por 'CÓDIGO' e 'RESUMO DO BALANCETE'
+            self.trim_rows_by_anchors(
+                destination,
+                header_text="CÓDIGO",
+                footer_text="RESUMO DO BALANCETE",
+            )
+
+            # Com o corpo delimitado, remove as colunas vazias remanescentes
             self.delete_empty_columns(destination)
-            self.delete_top_rows(destination, num_rows=6)
+
             self.save()
 
 
@@ -144,5 +207,4 @@ if __name__ == "__main__":
         origin_sheet = input("Aba de origem:\n").strip()
         destination_sheet = input("Aba de destino:\n").strip()
 
-        # Executa a esteira completa tratada e salva no final
         excel.process_and_prepare(origin_sheet, destination_sheet)
